@@ -3,7 +3,6 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, TemplateSendMessage, CarouselTemplate, CarouselColumn, MessageAction
 import requests
 import json
-import re
 from tinydb import TinyDB, Query
 from datetime import datetime
 
@@ -82,10 +81,8 @@ def handle_special_command(user_id, text):
         for record in records:
             for key in total.keys():
                 total[key] += record["nutrition"][key]
-
         days = len(set([r['date'] for r in records])) or 1
         avg = {k: round(v/days, 1) for k, v in total.items()}
-
         text = "【本月累計攝取量】\n" + "\n".join([f"{k}: {v:.1f} 克" for k, v in total.items()]) + "\n\n"
         text += "【平均每日攝取量】\n" + "\n".join([f"{k}: {v:.1f} 克" for k, v in avg.items()])
         return text
@@ -121,6 +118,10 @@ def handle_special_command(user_id, text):
 
 # --- 路由設定 ---
 
+@app.route("/", methods=['GET'])
+def home():
+    return "食刻-服務運行中"
+
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -139,16 +140,37 @@ def handle_message(event):
     text = event.message.text.strip()
 
     if text.startswith("/"):
-        reply = handle_special_command(user_id, text)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-        return
+        if text.startswith("/加入"):
+            parts = text.split()
+            if len(parts) >= 3:
+                food_name = parts[1]
+                quantity = parts[2]
+                nutrition_data = query_nutrition(f"{food_name} {quantity}")
+                if not nutrition_data:
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="加入失敗，請重新查詢"))
+                    return
+                db.insert({
+                    "user_id": user_id,
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "food_name": nutrition_data['food_name'],
+                    "quantity": nutrition_data['quantity'],
+                    "nutrition": nutrition_data['nutrition']
+                })
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"{nutrition_data['food_name']}（{nutrition_data['quantity']}）已加入記錄"))
+                return
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="格式錯誤，請使用：/加入 食物名稱 份量"))
+                return
+        else:
+            reply = handle_special_command(user_id, text)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
 
     nutrition_data = query_nutrition(text)
     if not nutrition_data:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="查詢失敗，請稍後再試"))
         return
 
-    # 整理顯示
     display_text = "\n".join([
         f"碳水化合物：{nutrition_data['nutrition']['碳水化合物']} 克",
         f"蛋白質：{nutrition_data['nutrition']['蛋白質']} 克",
@@ -174,28 +196,3 @@ def handle_message(event):
         )
     )
     line_bot_api.reply_message(event.reply_token, carousel)
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_join(event):
-    user_id = event.source.user_id
-    text = event.message.text.strip()
-
-    if text.startswith("/加入"):
-        parts = text.split()
-        if len(parts) >= 3:
-            food_name = parts[1]
-            quantity = parts[2]
-            nutrition_data = query_nutrition(f"{food_name} {quantity}")
-            if not nutrition_data:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="加入失敗，請重新查詢"))
-                return
-            db.insert({
-                "user_id": user_id,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "food_name": nutrition_data['food_name'],
-                "quantity": nutrition_data['quantity'],
-                "nutrition": nutrition_data['nutrition']
-            })
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"{nutrition_data['food_name']}（{nutrition_data['quantity']}）已加入記錄"))
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="格式錯誤，請使用：/加入 食物名稱 份量"))
